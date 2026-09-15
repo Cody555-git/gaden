@@ -51,7 +51,7 @@ if(COPPELIASIM_ZMQ_CPP_CLIENT_DIR AND EXISTS "${COPPELIASIM_ZMQ_CPP_CLIENT_DIR}/
   )
   target_compile_definitions(configureCoppeliaSim PRIVATE GENERATE_COPPELIA_SCENE SIM_REMOTEAPICLIENT_OBJECTS)
   target_link_libraries(configureCoppeliaSim PRIVATE ${ZMQ_LIBRARY} fmt::fmt)
-  ament_target_dependencies(configureCoppeliaSim PUBLIC rclcpp geometry_msgs tf2_geometry_msgs)
+  ament_target_dependencies(configureCoppeliaSim PUBLIC rclcpp geometry_msgs tf2_geometry_msgs tf2_ros)
 
   install(TARGETS configureCoppeliaSim DESTINATION lib/${PROJECT_NAME})
 else()

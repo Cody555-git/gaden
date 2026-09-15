@@ -6,7 +6,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <fmt/format.h>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_ros/transform_broadcaster.h>
 
 static void getEulerAngles(const geometry_msgs::msg::Quaternion& quat, double& x, double& y, double& z)
 {
@@ -90,6 +92,13 @@ int main(int argc, char** argv)
             }
         });
 
+    // Bridge: CoppeliaSim's ground-truth robot pose -> ROS2 ground_truth topic + map->{robotName}_base_link TF.
+    // MAPIRlab's original private package did this; it is not part of the public release, so we replace it here.
+    rclcpp::Publisher<Pose>::SharedPtr groundTruthPub =
+        node->create_publisher<Pose>(fmt::format("/{}/ground_truth", robotName), rclcpp::QoS(10));
+    tf2_ros::TransformBroadcaster tfBroadcaster(node);
+    std::string baseLinkFrame = fmt::format("{}_base_link", robotName);
+
     sim.startSimulation();
 
     double period = sim.getFloatParam(sim.floatparam_simulation_time_step) / simulationSpeed;
@@ -97,6 +106,32 @@ int main(int argc, char** argv)
     while (rclcpp::ok())
     {
         client.step();
+
+        std::vector<double> robotPos = sim.getObjectPosition(robot_handle, sim.handle_world);
+        std::vector<double> robotOri = sim.getObjectOrientation(robot_handle, sim.handle_world);
+        tf2::Quaternion q;
+        q.setRPY(robotOri[0], robotOri[1], robotOri[2]);
+        rclcpp::Time stamp = node->now();
+
+        Pose groundTruthMsg;
+        groundTruthMsg.header.stamp = stamp;
+        groundTruthMsg.header.frame_id = "map";
+        groundTruthMsg.pose.pose.position.x = robotPos[0];
+        groundTruthMsg.pose.pose.position.y = robotPos[1];
+        groundTruthMsg.pose.pose.position.z = robotPos[2];
+        groundTruthMsg.pose.pose.orientation = tf2::toMsg(q);
+        groundTruthPub->publish(groundTruthMsg);
+
+        geometry_msgs::msg::TransformStamped tfMsg;
+        tfMsg.header.stamp = stamp;
+        tfMsg.header.frame_id = "map";
+        tfMsg.child_frame_id = baseLinkFrame;
+        tfMsg.transform.translation.x = robotPos[0];
+        tfMsg.transform.translation.y = robotPos[1];
+        tfMsg.transform.translation.z = robotPos[2];
+        tfMsg.transform.rotation = tf2::toMsg(q);
+        tfBroadcaster.sendTransform(tfMsg);
+
         rate.sleep();
         rclcpp::spin_some(node);
     }
