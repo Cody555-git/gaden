@@ -41,26 +41,39 @@ int main(int argc, char** argv)
         node->declare_parameter<std::vector<double>>("position", {POSITION_NOT_SET, POSITION_NOT_SET, POSITION_NOT_SET});
 
     // Let's go
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step1: constructing RemoteAPIClient");
     RemoteAPIClient client;
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step2: client.getObject().sim()");
     RemoteAPIObject::sim sim = client.getObject().sim();
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step3: client.setStepping(true)");
     client.setStepping(true);
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step4: sim.getObject(/MobileRobots/%s_root)", robotName.c_str());
 
     int64_t robot_root_handle = sim.getObject(fmt::format("/MobileRobots/{}_root", robotName));
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step5: sim.getObjectChild, robot_root_handle=%ld", (long)robot_root_handle);
     int64_t robot_handle = sim.getObjectChild(robot_root_handle, 0);
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step6: robot_handle=%ld, positionToSet[0]=%f", (long)robot_handle, positionToSet[0]);
 
     if (positionToSet[0] != POSITION_NOT_SET)
     {
-        for (int64_t handle : sim.getObjectsInTree(robot_handle))
+        RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step7: sim.getObjectsInTree");
+        auto tree = sim.getObjectsInTree(robot_handle);
+        RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step8: got %zu objects in tree, resetting each", tree.size());
+        for (int64_t handle : tree)
             sim.resetDynamicObject(handle);
+        RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step9: sim.setObjectPosition");
         sim.setObjectPosition(robot_root_handle, sim.handle_world, positionToSet);
         positionToSet[0] = POSITION_NOT_SET;
 
         // probably unnecessary, but might as well
+        RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step10: sim.announceSceneContentChange");
         sim.announceSceneContentChange();
+        RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step11: position reset block done");
     }
 
     if (permanentChange)
         sim.saveScene(sim.getStringParam(sim.stringparam_scene_path_and_name)); // overwrite existing scene
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step12: past permanentChange check, about to create subscription");
 
     using Pose = geometry_msgs::msg::PoseWithCovarianceStamped;
     rclcpp::Subscription<Pose>::SharedPtr setPoseSub = node->create_subscription<Pose>(
@@ -99,13 +112,21 @@ int main(int argc, char** argv)
     tf2_ros::TransformBroadcaster tfBroadcaster(node);
     std::string baseLinkFrame = fmt::format("{}_base_link", robotName);
 
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step13: subscription created, about to sim.startSimulation()");
     sim.startSimulation();
+    RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step14: startSimulation returned, entering main loop");
 
     double period = sim.getFloatParam(sim.floatparam_simulation_time_step) / simulationSpeed;
     rclcpp::Rate rate(1.0 / period);
+    bool loggedFirstLoop = false;
     while (rclcpp::ok())
     {
         client.step();
+        if (!loggedFirstLoop)
+        {
+            RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step15: first client.step() in main loop done");
+            loggedFirstLoop = true;
+        }
 
         std::vector<double> robotPos = sim.getObjectPosition(robot_handle, sim.handle_world);
         std::vector<double> robotOri = sim.getObjectOrientation(robot_handle, sim.handle_world);
