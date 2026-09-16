@@ -7,8 +7,11 @@
 #include <fmt/format.h>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_broadcaster.h>
+#include <algorithm>
+#include <cctype>
 
 static void getEulerAngles(const geometry_msgs::msg::Quaternion& quat, double& x, double& y, double& z)
 {
@@ -111,6 +114,53 @@ int main(int argc, char** argv)
         node->create_publisher<Pose>(fmt::format("/{}/ground_truth", robotName), rclcpp::QoS(10));
     tf2_ros::TransformBroadcaster tfBroadcaster(node);
     std::string baseLinkFrame = fmt::format("{}_base_link", robotName);
+
+    // Bridge: /{robotName}/cmd_vel (Twist) -> CoppeliaSim wheel joint target velocities.
+    // Also absent from the public release (nav2 publishes Twist with 0 subscribers otherwise, robot never moves).
+    // wheelRadius/wheelSeparation default to the published Pioneer 3-DX spec (ActivMedia: wheel diameter 195 mm,
+    // wheelbase 380 mm) -- NOT yet confirmed against this scene's actual wheel geometry.
+    double wheelRadius = node->declare_parameter<double>("wheelRadius", 0.0975);
+    double wheelSeparation = node->declare_parameter<double>("wheelSeparation", 0.381);
+
+    int64_t leftWheelJoint = -1, rightWheelJoint = -1;
+    for (int64_t handle : sim.getObjectsInTree(robot_handle, sim.object_joint_type))
+    {
+        std::string alias = sim.getObjectAlias(handle);
+        std::string lowerAlias = alias;
+        std::transform(lowerAlias.begin(), lowerAlias.end(), lowerAlias.begin(), [](unsigned char c) { return std::tolower(c); });
+        RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG cmd_vel: found joint '%s' under robot tree", alias.c_str());
+        if (lowerAlias.find("left") != std::string::npos)
+            leftWheelJoint = handle;
+        else if (lowerAlias.find("right") != std::string::npos)
+            rightWheelJoint = handle;
+    }
+
+    rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmdVelSub;
+    if (leftWheelJoint == -1 || rightWheelJoint == -1)
+    {
+        RCLCPP_ERROR(rclcpp::get_logger("coppelia"),
+                     "cmd_vel bridge disabled: could not find both a 'left' and 'right' wheel joint under "
+                     "/MobileRobots/%s_root (left=%ld, right=%ld). Robot will not move.",
+                     robotName.c_str(), (long)leftWheelJoint, (long)rightWheelJoint);
+    }
+    else
+    {
+        cmdVelSub = node->create_subscription<geometry_msgs::msg::Twist>(
+            fmt::format("/{}/cmd_vel", robotName), rclcpp::QoS(10),
+            [&sim, leftWheelJoint, rightWheelJoint, wheelRadius, wheelSeparation](geometry_msgs::msg::Twist::SharedPtr msg)
+            {
+                double v = msg->linear.x;
+                double w = msg->angular.z;
+                double leftLinear = v - w * wheelSeparation / 2.0;
+                double rightLinear = v + w * wheelSeparation / 2.0;
+                double leftAngular = leftLinear / wheelRadius;
+                double rightAngular = rightLinear / wheelRadius;
+                RCLCPP_INFO(rclcpp::get_logger("coppelia"),
+                            "DIAG cmd_vel callback: v=%.3f w=%.3f -> leftAngular=%.3f rightAngular=%.3f", v, w, leftAngular, rightAngular);
+                sim.setJointTargetVelocity(leftWheelJoint, leftAngular);
+                sim.setJointTargetVelocity(rightWheelJoint, rightAngular);
+            });
+    }
 
     RCLCPP_INFO(rclcpp::get_logger("coppelia"), "DIAG step13: subscription created, about to sim.startSimulation()");
     sim.startSimulation();
