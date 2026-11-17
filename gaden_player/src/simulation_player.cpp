@@ -108,23 +108,29 @@ void Player::run()
     // playback frequency
     float player_freq = declare_parameter<float>("player_freq", 1); // Hz
     GADEN_INFO("player_freq {:.2f} Hz", player_freq);
-    gaden::Utils::Time::Countdown countdown(1.f / player_freq);
+    // Advance on the node clock (sim time when use_sim_time is set), not the wall clock, so that the playback keeps step with a
+    // simulator running faster or slower than real time (osl, 2026-11-17; was gaden::Utils::Time::Countdown on the wall clock).
+    // A step is due every 1 / player_freq s of node time; after a gap of more than 5 steps (the clock started or jumped) the
+    // playback restarts its step grid from now instead of catching up.
+    const rclcpp::Duration period = rclcpp::Duration::from_seconds(1.0 / player_freq);
 
     // load the first timestep immediately
     Scene->AdvanceTimestep();
+    time_last_loaded_file = now();
 
     while (rclcpp::ok())
     {
-        if (countdown.isDone())
+        rclcpp::Time t = now();
+        if (t < time_last_loaded_file || t - time_last_loaded_file > period * 5.0)
+            time_last_loaded_file = t;  // clock started, jumped or went back: no catch-up
+        else if (t - time_last_loaded_file >= period)
         {
             // Read Gas and Wind data from log_files
             Scene->AdvanceTimestep();
 
             displayCurrentGasDistribution(); // Rviz visualization
 
-            // Looping?
-            time_last_loaded_file = now();
-            countdown.Restart();
+            time_last_loaded_file = time_last_loaded_file + period;
         }
 
         // Attend service request at max rate!
